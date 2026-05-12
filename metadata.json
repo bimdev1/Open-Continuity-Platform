@@ -1,0 +1,6 @@
+{
+  "name": "OCA Platform: Open Continuity API",
+  "description": "A cross-platform proof-of-concept for local network clipboard continuity featuring a shared Rust core (liboca), Linux daemon (ocad), and Android service.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
