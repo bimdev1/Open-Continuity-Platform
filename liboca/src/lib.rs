@@ -1,10 +1,12 @@
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, KeyInit, aead::Aead};
+use ed25519_dalek::{SigningKey, VerifyingKey, Signer};
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, KeyInit, aead::Aead, aead::OsRng as AeadRng};
+use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 use tokio::net::{TcpStream, TcpListener};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde::{Serialize, Deserialize};
 use std::error::Error;
 use rand::rngs::OsRng;
+use rand::RngCore;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 
@@ -19,19 +21,13 @@ pub enum PayloadType {
 pub struct OcaMessage {
     pub version: u8,
     pub payload_type: PayloadType,
-    pub data: Vec<u8>, // Encrypted payload
-    pub tag: [u8; 16], // AEAD tag
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ClipboardPayload {
-    pub text: String,
-    pub timestamp: u64,
+    pub nonce: [u8; 12],
+    pub data: Vec<u8>, 
+    pub tag: [u8; 16],
 }
 
 pub struct OcaSession {
     pub keypair: SigningKey,
-    pub peer_pubkey: Option<VerifyingKey>,
     pub shared_secret: Option<[u8; 32]>,
 }
 
@@ -41,45 +37,69 @@ impl OcaSession {
         let signing_key = SigningKey::generate(&mut csprng);
         OcaSession {
             keypair: signing_key,
-            peer_pubkey: None,
-            shared_secret: Some([0u8; 32]), // Dummy secret for MVP
+            shared_secret: None,
         }
     }
 
-    /// Simplified handshake initiation
-    pub async fn initiate_handshake(&mut self, mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
-        let pubkey_bytes = self.keypair.verifying_key().to_bytes();
+    pub async fn initiate_handshake(&mut self, stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
+        let mut csprng = OsRng;
+        let secret = EphemeralSecret::random_from_rng(&mut csprng);
+        let public = X25519PublicKey::from(&secret);
         
-        // 1. Send our public key
-        stream.write_all(&pubkey_bytes).await?;
+        // 1. Send X25519 public key
+        stream.write_all(public.as_bytes()).await?;
         
         // 2. Receive peer public key
         let mut peer_pubkey_bytes = [0u8; 32];
         stream.read_exact(&mut peer_pubkey_bytes).await?;
-        let peer_verifying_key = VerifyingKey::from_bytes(&peer_pubkey_bytes)?;
-        self.peer_pubkey = Some(peer_verifying_key);
+        let peer_public = X25519PublicKey::from(peer_pubkey_bytes);
+
+        // 3. Derive shared secret
+        let shared_secret = secret.diffie_hellman(&peer_public);
+        self.shared_secret = Some(*shared_secret.raw_secret_bytes());
 
         Ok(())
     }
 
-    pub fn encrypt(&self, data: &[u8]) -> Result<(Vec<u8>, [u8; 16]), Box<dyn Error>> {
+    pub fn encrypt(&self, data: &[u8]) -> Result<OcaMessage, Box<dyn Error>> {
         let secret = self.shared_secret.ok_or("No session secret")?;
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&secret));
-        let nonce = Nonce::from_slice(&[0u8; 12]); 
+        
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
         
         let mut ciphertext = cipher.encrypt(nonce, data)
             .map_err(|e| format!("Encryption failed: {}", e))?;
         
-        if ciphertext.len() < 16 {
-            return Err("Encryption result too short".into());
-        }
-
         let tag_start = ciphertext.len() - 16;
         let tag: [u8; 16] = ciphertext[tag_start..].try_into()?;
         ciphertext.truncate(tag_start);
         
-        Ok((ciphertext, tag))
+        Ok(OcaMessage {
+            version: PROTOCOL_VERSION,
+            payload_type: PayloadType::ClipboardText,
+            nonce: nonce_bytes,
+            data: ciphertext,
+            tag,
+        })
     }
+}
+
+pub async fn send_oca_message(stream: &mut TcpStream, msg: &OcaMessage) -> Result<(), Box<dyn Error>> {
+    let serialized = bincode::serialize(msg)?;
+    let len = serialized.len() as u32;
+    stream.write_u32(len).await?;
+    stream.write_all(&serialized).await?;
+    Ok(())
+}
+
+pub async fn receive_oca_message(stream: &mut TcpStream) -> Result<OcaMessage, Box<dyn Error>> {
+    let len = stream.read_u32().await? as usize;
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+    let msg: OcaMessage = bincode::deserialize(&buf)?;
+    Ok(msg)
 }
 
 pub async fn start_listener(port: u16) -> Result<(), Box<dyn Error>> {

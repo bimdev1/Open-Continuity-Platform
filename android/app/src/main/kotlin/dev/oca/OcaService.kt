@@ -62,7 +62,7 @@ class OcaService : Service() {
 
     // JNI Native methods
     private external fun initRustCore()
-    private external fun sendToPeers(text: String)
+    private external fun sendToPeers(text: String, peerAddr: String)
 
     companion object {
         init {
