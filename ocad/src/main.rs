@@ -51,6 +51,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("ocad: D-Bus service started on org.oca.ocad at /org/oca/ocad");
     
+    // 4. Implement discovery and connection manager
+    let mut discovery_rx = liboca::start_discovery().await?;
+    let peers_clone = daemon.peers.clone();
+    let session_clone = daemon.session.clone();
+
+    tokio::spawn(async move {
+        while let Some((name, addr, port)) = discovery_rx.recv().await {
+            let full_addr = format!("{}:{}", addr, port);
+            println!("ocad: Discovered peer {} at {}", name, full_addr);
+            
+            if let Ok(mut stream) = TcpStream::connect(full_addr.clone()).await {
+                let mut session = session_clone.lock().await;
+                if session.initiate_handshake(&mut stream).await.is_ok() {
+                    println!("ocad: Handshake successful with {}", name);
+                    
+                    let mut peers = peers_clone.lock().await;
+                    peers.insert(name.clone(), stream.try_clone().unwrap());
+                    
+                    // Spawn receiver loop for this peer
+                    let mut peer_stream = stream;
+                    tokio::spawn(async move {
+                        loop {
+                            if let Ok(msg) = liboca::receive_oca_message(&mut peer_stream).await {
+                                println!("ocad: Received message from {}", name);
+                                // Here we would decrypt and emit D-Bus signal
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    });
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }

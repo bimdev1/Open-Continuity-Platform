@@ -114,24 +114,33 @@ pub async fn start_listener(port: u16) -> Result<(), Box<dyn Error>> {
     }
 }
 
-pub async fn start_discovery() -> Result<(), Box<dyn Error>> {
+pub async fn start_discovery() -> Result<tokio::sync::mpsc::Receiver<(String, String, u16)>, Box<dyn Error>> {
     use mdns_sd::{ServiceDaemon, ServiceInfo};
 
+    let (tx, rx) = tokio::sync::mpsc::channel(10);
     let mdns = ServiceDaemon::new()?;
     let service_type = "_oca._tcp.local.";
+    let receiver = mdns.browse(service_type)?;
+
+    tokio::spawn(async move {
+        while let Ok(event) = receiver.recv() {
+            match event {
+                mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                    let addr = info.get_addresses().iter().next().unwrap().to_string();
+                    let port = info.get_port();
+                    let _ = tx.send((info.get_fullname().to_string(), addr, port)).await;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // Still perform registration (announce self)
     let instance_name = "oca_peer";
     let host_name = "oca_host.local.";
     let port = 5005;
-    
-    let my_service = ServiceInfo::new(
-        service_type,
-        instance_name,
-        host_name,
-        "127.0.0.1",
-        port,
-        None,
-    )?;
-    
+    let my_service = ServiceInfo::new(service_type, instance_name, host_name, "127.0.0.1", port, None)?;
     mdns.register(my_service)?;
-    Ok(())
+
+    Ok(rx)
 }
