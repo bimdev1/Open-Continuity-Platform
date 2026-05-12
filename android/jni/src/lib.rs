@@ -30,19 +30,91 @@ pub extern "system" fn Java_dev_oca_OcaService_initRustCore(
     service: JObject,
 ) {
     let service_ref = env.new_global_ref(service).unwrap();
-    let mut jvm = env.get_java_vm().unwrap();
+    let jvm = env.get_java_vm().unwrap();
 
     RUNTIME.spawn(async move {
-        // Listener loop
-        let listener = liboca::start_listener(5005).await.unwrap();
-        // Since start_listener was just a loop, I need to refactor it or accept here.
-        // For now, accept loop here.
+        // 1. Listen for incoming connections
+        let listener = liboca::start_listener(5005).await.expect("Failed to start listener");
+        let jvm_clone = jvm.clone();
+        let service_ref_clone = service_ref.clone();
+
+        tokio::spawn(async move {
+            while let Ok((mut stream, addr)) = listener.accept().await {
+                let peer_addr = addr.to_string();
+                let mut session = OcaSession::new();
+                if session.accept_handshake(&mut stream).await.is_ok() {
+                    let mut manager = PEER_MANAGER.lock().unwrap();
+                    manager.sessions.insert(peer_addr.clone(), session);
+                    manager.peers.insert(peer_addr.clone(), stream.try_clone().unwrap());
+                    
+                    // Start receiver loop
+                    let inner_jvm = jvm_clone.clone();
+                    let inner_service_ref = service_ref_clone.clone();
+                    let peer_addr_inner = peer_addr.clone();
+                    tokio::spawn(async move {
+                        let mut stream_read = stream;
+                        loop {
+                            if let Ok(msg) = liboca::receive_oca_message(&mut stream_read).await {
+                                let manager = PEER_MANAGER.lock().unwrap();
+                                if let Some(session) = manager.sessions.get(&peer_addr_inner) {
+                                    if let Ok(plaintext) = session.decrypt(&msg) {
+                                        let text = String::from_utf8_lossy(&plaintext).to_string();
+                                        // Callback to Kotlin
+                                        let mut env = inner_jvm.attach_current_thread().unwrap();
+                                        let j_text = env.new_string(text).unwrap();
+                                        let _ = env.call_method(&inner_service_ref, "onMessageReceived", "(Ljava/lang/String;)V", &[(&j_text).into()]);
+                                    }
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+
+        // 2. Discover other peers
+        let mut discovery_rx = liboca::start_discovery().await.expect("Failed to start discovery");
+        while let Some((name, addr, port)) = discovery_rx.recv().await {
+            let full_addr = format!("{}:{}", addr, port);
+            let mut manager = PEER_MANAGER.lock().unwrap();
+            if !manager.peers.contains_key(&full_addr) {
+                drop(manager);
+                if let Ok(mut stream) = TcpStream::connect(&full_addr).await {
+                    let mut session = OcaSession::new();
+                    if session.initiate_handshake(&mut stream).await.is_ok() {
+                        let mut manager = PEER_MANAGER.lock().unwrap();
+                        manager.sessions.insert(full_addr.clone(), session);
+                        manager.peers.insert(full_addr.clone(), stream.try_clone().unwrap());
+                        
+                        // Receiver loop (same as above)
+                        let inner_jvm = jvm.clone();
+                        let inner_service_ref = service_ref.clone();
+                        let full_addr_inner = full_addr.clone();
+                        tokio::spawn(async move {
+                            let mut stream_read = stream;
+                            loop {
+                                if let Ok(msg) = liboca::receive_oca_message(&mut stream_read).await {
+                                    let manager = PEER_MANAGER.lock().unwrap();
+                                    if let Some(session) = manager.sessions.get(&full_addr_inner) {
+                                        if let Ok(plaintext) = session.decrypt(&msg) {
+                                            let text = String::from_utf8_lossy(&plaintext).to_string();
+                                            let mut env = inner_jvm.attach_current_thread().unwrap();
+                                            let j_text = env.new_string(text).unwrap();
+                                            let _ = env.call_method(&inner_service_ref, "onMessageReceived", "(Ljava/lang/String;)V", &[(&j_text).into()]);
+                                        }
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
     });
-        
-    // Callback logic
-    // env.call_method(&service_ref, "onMessageReceived", "(Ljava/lang/String;)V", &[j_data.into()]).unwrap();
-    // }
-    // });
 }
 
 #[no_mangle]

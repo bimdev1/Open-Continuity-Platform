@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peers: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    let _conn = connection::Builder::session()?
+    let dbus_conn = connection::Builder::session()?
         .name("org.oca.ocad")?
         .serve_at("/org/oca/ocad", daemon)?
         .build()
@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut discovery_rx = liboca::start_discovery().await?;
     let peers_clone = daemon.peers.clone();
     let session_clone = daemon.session.clone();
+    let dbus_conn_clone = dbus_conn.clone();
 
     tokio::spawn(async move {
         while let Some((name, addr, port)) = discovery_rx.recv().await {
@@ -71,16 +72,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     // Spawn receiver loop for this peer
                     let mut peer_stream = stream;
+                    let inner_session_clone = session_clone.clone();
+                    let inner_dbus_conn = dbus_conn_clone.clone();
                     tokio::spawn(async move {
+                        let ok_ctxt = SignalContext::new(&inner_dbus_conn, "/org/oca/ocad");
                         loop {
                             if let Ok(msg) = liboca::receive_oca_message(&mut peer_stream).await {
-                                let mut session = session_clone.lock().await;
+                                let session = inner_session_clone.lock().await;
                                 if let Ok(plaintext) = session.decrypt(&msg) {
-                                    let text = String::from_utf8_lossy(&plaintext);
+                                    let text = String::from_utf8_lossy(&plaintext).to_string();
                                     println!("ocad: Received and decrypted message from {}: {}", name, text);
-                                    // Normally, signal emission here:
-                                    // Using a placeholder for signal context if not directly available:
-                                    // OcaDaemon::clipboard_received(&ctxt, text.to_string()).await;
+                                    if let Ok(ctxt) = &ok_ctxt {
+                                        let _ = OcaDaemon::clipboard_received(ctxt, text).await;
+                                    }
                                 } else {
                                     println!("ocad: Failed to decrypt message from {}", name);
                                 }

@@ -61,6 +61,26 @@ impl OcaSession {
         Ok(())
     }
 
+    pub async fn accept_handshake(&mut self, stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
+        let mut csprng = OsRng;
+        let secret = EphemeralSecret::random_from_rng(&mut csprng);
+        let public = X25519PublicKey::from(&secret);
+        
+        // 1. Receive peer public key
+        let mut peer_pubkey_bytes = [0u8; 32];
+        stream.read_exact(&mut peer_pubkey_bytes).await?;
+        let peer_public = X25519PublicKey::from(peer_pubkey_bytes);
+
+        // 2. Send our public key
+        stream.write_all(public.as_bytes()).await?;
+
+        // 3. Derive shared secret
+        let shared_secret = secret.diffie_hellman(&peer_public);
+        self.shared_secret = Some(*shared_secret.raw_secret_bytes());
+
+        Ok(())
+    }
+
     pub fn encrypt(&self, data: &[u8]) -> Result<OcaMessage, Box<dyn Error>> {
         let secret = self.shared_secret.ok_or("No session secret")?;
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&secret));
@@ -117,16 +137,10 @@ pub async fn receive_oca_message(stream: &mut TcpStream) -> Result<OcaMessage, B
     Ok(msg)
 }
 
-pub async fn start_listener(port: u16) -> Result<(), Box<dyn Error>> {
+pub async fn start_listener(port: u16) -> Result<TcpListener, Box<dyn Error>> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     println!("liboca: Listening on port {}", port);
-    
-    loop {
-        let (socket, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            println!("liboca: New connection from {}", socket.peer_addr().unwrap());
-        });
-    }
+    Ok(listener)
 }
 
 pub async fn start_discovery() -> Result<tokio::sync::mpsc::Receiver<(String, String, u16)>, Box<dyn Error>> {
