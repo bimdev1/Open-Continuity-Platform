@@ -28,5 +28,11 @@ pub extern "system" fn Java_dev_oca_OcaService_sendToPeers(
     let input: String = env.get_string(&text).expect("Couldn't get java string!").into();
     println!("JNI: Sending to peers: {}", input);
     
-    // Logic to encrypt and send via liboca
+    let session = SESSION.lock().unwrap();
+    match session.encrypt(input.as_bytes()) {
+        Ok((_ciphertext, _tag)) => {
+            println!("JNI: Successfully encrypted payload for transmission");
+        }
+        Err(e) => println!("JNI: Encryption error: {}", e),
+    }
 }

@@ -42,7 +42,7 @@ impl OcaSession {
         OcaSession {
             keypair: signing_key,
             peer_pubkey: None,
-            shared_secret: None,
+            shared_secret: Some([0u8; 32]), // Dummy secret for MVP
         }
     }
 
@@ -59,21 +59,38 @@ impl OcaSession {
         let peer_verifying_key = VerifyingKey::from_bytes(&peer_pubkey_bytes)?;
         self.peer_pubkey = Some(peer_verifying_key);
 
-        // 3. In a real AEAD scheme, we'd use X25519 for DH key exchange here.
-        // For this MVP, we acknowledge mutually.
         Ok(())
     }
 
     pub fn encrypt(&self, data: &[u8]) -> Result<(Vec<u8>, [u8; 16]), Box<dyn Error>> {
         let secret = self.shared_secret.ok_or("No session secret")?;
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&secret));
-        let nonce = Nonce::from_slice(&[0u8; 12]); // In production, use incrementing nonce/random
+        let nonce = Nonce::from_slice(&[0u8; 12]); 
         
-        let ciphertext = cipher.encrypt(nonce, data)
+        let mut ciphertext = cipher.encrypt(nonce, data)
             .map_err(|e| format!("Encryption failed: {}", e))?;
         
-        // Simplified: AEAD usually returns ciphertext+tag combined
-        Ok((ciphertext, [0u8; 16])) // Placeholder for tag
+        if ciphertext.len() < 16 {
+            return Err("Encryption result too short".into());
+        }
+
+        let tag_start = ciphertext.len() - 16;
+        let tag: [u8; 16] = ciphertext[tag_start..].try_into()?;
+        ciphertext.truncate(tag_start);
+        
+        Ok((ciphertext, tag))
+    }
+}
+
+pub async fn start_listener(port: u16) -> Result<(), Box<dyn Error>> {
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    println!("liboca: Listening on port {}", port);
+    
+    loop {
+        let (socket, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            println!("liboca: New connection from {}", socket.peer_addr().unwrap());
+        });
     }
 }
 
