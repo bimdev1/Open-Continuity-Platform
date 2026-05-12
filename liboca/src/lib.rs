@@ -73,9 +73,6 @@ impl OcaSession {
             .map_err(|e| format!("Encryption failed: {}", e))?;
         
         let tag_start = ciphertext.len() - 16;
-        let tag: [u8; 16] = ciphertext[tag_start..].try_into()?;
-        ciphertext.truncate(tag_start);
-        
         Ok(OcaMessage {
             version: PROTOCOL_VERSION,
             payload_type: PayloadType::ClipboardText,
@@ -83,6 +80,21 @@ impl OcaSession {
             data: ciphertext,
             tag,
         })
+    }
+
+    pub fn decrypt(&self, msg: &OcaMessage) -> Result<Vec<u8>, Box<dyn Error>> {
+        let secret = self.shared_secret.ok_or("No session secret")?;
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&secret));
+        let nonce = Nonce::from_slice(&msg.nonce);
+
+        // Combine data and tag
+        let mut cipher_text_with_tag = msg.data.clone();
+        cipher_text_with_tag.extend_from_slice(&msg.tag);
+
+        let plaintext = cipher.decrypt(nonce, cipher_text_with_tag.as_ref())
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        
+        Ok(plaintext)
     }
 }
 
