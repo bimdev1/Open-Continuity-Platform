@@ -64,6 +64,12 @@ class OcaService : Service() {
     private external fun initRustCore()
     private external fun sendToPeers(text: String, peerAddr: String)
 
+    // Called from Rust
+    fun onMessageReceived(text: String) {
+        Log.d("OcaService", "Message received: $text")
+        // Implementation to update clipboard would go here
+    }
+
     companion object {
         init {
             System.loadLibrary("oca_jni")

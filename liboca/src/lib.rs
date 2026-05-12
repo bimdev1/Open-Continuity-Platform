@@ -73,6 +73,9 @@ impl OcaSession {
             .map_err(|e| format!("Encryption failed: {}", e))?;
         
         let tag_start = ciphertext.len() - 16;
+        let tag: [u8; 16] = ciphertext[tag_start..].try_into()?; // Extract the tag
+        ciphertext.truncate(tag_start); // Remove tag from data buffer
+        
         Ok(OcaMessage {
             version: PROTOCOL_VERSION,
             payload_type: PayloadType::ClipboardText,

@@ -74,8 +74,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tokio::spawn(async move {
                         loop {
                             if let Ok(msg) = liboca::receive_oca_message(&mut peer_stream).await {
-                                println!("ocad: Received message from {}", name);
-                                // Here we would decrypt and emit D-Bus signal
+                                let mut session = session_clone.lock().await;
+                                if let Ok(plaintext) = session.decrypt(&msg) {
+                                    let text = String::from_utf8_lossy(&plaintext);
+                                    println!("ocad: Received and decrypted message from {}: {}", name, text);
+                                    // Normally, signal emission here:
+                                    // OcaDaemon::clipboard_received(&ctxt, text.to_string()).await;
+                                } else {
+                                    println!("ocad: Failed to decrypt message from {}", name);
+                                }
                             } else {
                                 break;
                             }
