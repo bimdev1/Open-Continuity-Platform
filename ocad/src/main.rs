@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let text = String::from_utf8_lossy(&plaintext);
                                     println!("ocad: Received and decrypted message from {}: {}", name, text);
                                     // Normally, signal emission here:
+                                    // Using a placeholder for signal context if not directly available:
                                     // OcaDaemon::clipboard_received(&ctxt, text.to_string()).await;
                                 } else {
                                     println!("ocad: Failed to decrypt message from {}", name);

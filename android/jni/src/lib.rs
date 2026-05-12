@@ -34,18 +34,15 @@ pub extern "system" fn Java_dev_oca_OcaService_initRustCore(
 
     RUNTIME.spawn(async move {
         // Listener loop
-        if let Ok(listener) = liboca::start_listener(5005).await {
-            // ... (Handshake and accept loop implementation)
-        }
-        
-        // Example of callback logic
-        // let data = "test";
-        // {
-        //     let mut env = jvm.attach_current_thread().unwrap();
-        //     let j_data = env.new_string(data).unwrap();
-        //     env.call_method(&service_ref, "onMessageReceived", "(Ljava/lang/String;)V", &[j_data.into()]).unwrap();
-        // }
+        let listener = liboca::start_listener(5005).await.unwrap();
+        // Since start_listener was just a loop, I need to refactor it or accept here.
+        // For now, accept loop here.
     });
+        
+    // Callback logic
+    // env.call_method(&service_ref, "onMessageReceived", "(Ljava/lang/String;)V", &[j_data.into()]).unwrap();
+    // }
+    // });
 }
 
 #[no_mangle]
